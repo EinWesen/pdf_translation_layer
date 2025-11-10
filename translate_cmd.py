@@ -26,11 +26,17 @@ class OpenAiCompatibleTranslator(TextTranslator):
         assert self.api_key is not None,  'OPENAI_API_KEY is not set'
         assert self.model is not None,    'OPEN_API_MODEL is not set'
         assert self.base_url is not None, 'OPEN_API_BASE is not set'
+
+        import tiktoken
+        self.token_encoder = tiktoken.get_encoding("cl100k_base")
         
         #import now, that it is actually needed        
 
     def translate_text(self, text:str)->str:
+        #FIXME: this should be configurable since it depends on the model 
+        assert len(self.token_encoder.encode(text)) < 3900, 'Textblock is too long' 
         import openai
+
         client = openai.OpenAI(api_key=self.api_key, base_url=self.base_url)
 
         prompt = f'Translate the text below into {self.lang_to} and return the translated text only.\nText: "{text}"'
