@@ -5,6 +5,7 @@ import os
 import argparse
 import re
 from collections import Counter
+import math
 
 import pymupdf
 from tqdm import tqdm
@@ -14,9 +15,18 @@ class TextTranslator:
     def __init__(self, lang_from:str, lang_to:str):
         self.lang_from=lang_from
         self.lang_to=lang_to
+        self.translation_cache=dict()
+
+    def translate_text(self, text:str)->str:
+        if text in self.translation_cache:            
+            return self.translation_cache[text]
+        else:
+            result = self._translate_text(text)
+            self.translation_cache[text] = result
+            return result
 
     @abstractmethod
-    def translate_text(self, text:str)->str:
+    def _translate_text(self, text:str)->str:
         return text
 
 class OpenAiCompatibleTranslator(TextTranslator):
@@ -35,14 +45,20 @@ class OpenAiCompatibleTranslator(TextTranslator):
         
         #import now, that it is actually needed        
 
-    def translate_text(self, text:str)->str:
+    def _translate_text(self, text:str)->str:
         #FIXME: this should be configurable since it depends on the model 
         assert len(self.token_encoder.encode(text)) < 3900, 'Textblock is too long' 
         import openai
 
         client = openai.OpenAI(api_key=self.api_key, base_url=self.base_url)
+        prompt = f"You are an expert in {self.lang_from} and {self.lang_to}.\nPlease provide a high-quality translation of the following text from {self.lang_from} to {self.lang_to}. Only generate the translated text while keeping any existing line breaks.  No additional text or explanation needed.\nText: {text}"
+#        prompt = None
+#        if '\n' in text:
+#            prompt = f'Translate the text below into {self.lang_to} while keeping line breaks and return the translated text only.\nText: {text}"'
+#        else:
+            # Stop model to complaining about the text being one line
+#            prompt = f'Translate the text below into {self.lang_to} and return the translated text only.\nText: {text}"'
 
-        prompt = f'Translate the text below into {self.lang_to} while keeping line breaks and return the translated text only.\nText: {text}"'
 
         response = client.chat.completions.create(model=self.model, messages=[{ "role": "user", "content": prompt }])
         
@@ -107,11 +123,15 @@ def extract_embedded_fonts(doc):
 def extract_blocks(page, text_flags):
     #blocks = page.get_text("blocks", flags=textflags)
     #text_dicts = page.get_text("dict", flags=textflags)
-    
+
     text_dict = page.get_text("dict", flags=text_flags)
     blocks = []
 
     for block in text_dict["blocks"]:
+        
+        #print(block)
+        #print('-------------------------')
+
         if "lines" not in block:
             continue  # skip non-text blocks
 
@@ -119,8 +139,14 @@ def extract_blocks(page, text_flags):
         block_text = ""
         font_sizes = []
         fonts = []
+        rotations = []
 
-        for line in block["lines"]:
+        for line in block["lines"]:            
+            if 'dir' in line: 
+                rotation = line['dir']
+                if not rotation in rotations:
+                    rotations.append(rotation)
+
             for span in line["spans"]:                
                 block_text += span["text"]
                 font_sizes.append(span["size"])
@@ -136,12 +162,17 @@ def extract_blocks(page, text_flags):
         # most common font in this block
         most_common_font = Counter(fonts).most_common(1)[0][0] if fonts else None
 
+        assert len(rotations) <=1, 'block with multiple rotations are not supported right now'        
+
         blocks.append({
             "bbox": bbox,
             "text": block_text,
             "avg_font_size": avg_font_size,
-            "common_font": most_common_font            
-        })    
+            "common_font": most_common_font,
+            "rotation": (math.degrees(math.atan2(-1*rotations[0][1], rotations[0][0])) if len(rotations) == 1 else None),
+            "dir": rotations[0] if len(rotations) == 1 else None
+        })
+
     return blocks
 
 def is_valid_text(text:str)->bool:
@@ -216,7 +247,7 @@ def translate_pdf(input_file: str, source_lang: str, target_lang: str, layer: st
         blocks = extract_blocks(page,textflags)
 
         # Every block of text is contained in a rectangle ("bbox")
-        for block in tqdm(blocks, desc='Translating bocks...', leave=False):
+        for block in tqdm(blocks, desc='Translating blocks...', leave=False):
             bbox = block['bbox']  # area containing the text
             text = block['text']  # the text of this block
 
@@ -224,40 +255,43 @@ def translate_pdf(input_file: str, source_lang: str, target_lang: str, layer: st
 
                 # Invoke the actual translation
                 translated = prepare_pdf_text(translator.translate_text(text))
-
-                if not keep_original:
-                    # Move original text to hidden layer
-                    page.insert_htmlbox(
-                        bbox,
-                        text,
-                        css="* {font-family: sans-serif;}",
-                        oc=ocg_orig
-                    )
-                    # Clear original text area in base layer
-                    page.draw_rect(bbox, color=None, fill=WHITE)
-                else:
-                    # Cover the original text only in translation layer
-                    page.draw_rect(bbox, color=None, fill=WHITE, oc=ocg_trans)
-
-                # Write the translated text in specified color
-                font_name = block['common_font']
-                font_file_path=embedded_fonts.get(font_name,None)
                 
-                if font_name not in embedded_fonts or font_file_path is None:
-                    #if font_name not in embedded_fonts:
-                    #    print(f"WARNING: {font_name} not found")
-                    font_name = 'helv'
-                            
-                insert_text_block(
-                    page,
-                    rect=bbox,
-                    buffer=translated,
-                    fontsize=block['avg_font_size'], 
-                    fontname=font_name,
-                    fontfile=font_file_path,
-                    oc=ocg_trans,
-                    color=rgb_color
-                )
+                if translated != text:
+
+                    if not keep_original:
+                        # Move original text to hidden layer
+                        page.insert_htmlbox(
+                            bbox,
+                            text,
+                            css="* {font-family: sans-serif;}",
+                            oc=ocg_orig
+                        )
+                        # Clear original text area in base layer
+                        page.draw_rect(bbox, color=None, fill=WHITE)
+                    else:
+                        # Cover the original text only in translation layer
+                        page.draw_rect(bbox, color=None, fill=WHITE, oc=ocg_trans)
+
+                    # Write the translated text in specified color
+                    font_name = block['common_font']
+                    font_file_path=embedded_fonts.get(font_name,None)
+                
+                    if font_name not in embedded_fonts or font_file_path is None:
+                        #if font_name not in embedded_fonts:
+                        #    print(f"WARNING: {font_name} not found")
+                        font_name = 'helv'
+                    
+                    insert_text_block(
+                        page,
+                        rect=bbox,
+                        buffer=translated,
+                        fontsize=block['avg_font_size'], 
+                        fontname=font_name,
+                        fontfile=font_file_path,
+                        oc=ocg_trans,
+                        color=rgb_color,
+                        rotate=block['rotation']
+                    )
 
 
     #doc.subset_fonts()
