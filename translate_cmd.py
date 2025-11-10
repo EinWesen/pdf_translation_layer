@@ -42,7 +42,7 @@ class OpenAiCompatibleTranslator(TextTranslator):
 
         client = openai.OpenAI(api_key=self.api_key, base_url=self.base_url)
 
-        prompt = f'Translate the text below into {self.lang_to} while keeping line breaks and eturn the translated text only.\nText: {text}"'
+        prompt = f'Translate the text below into {self.lang_to} while keeping line breaks and return the translated text only.\nText: {text}"'
 
         response = client.chat.completions.create(model=self.model, messages=[{ "role": "user", "content": prompt }])
         
