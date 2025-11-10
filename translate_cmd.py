@@ -2,10 +2,10 @@
 # and was originally taken from https://github.com/davideuler/pdf-translator-for-human/commit/9d793d084e52df5f5ba4f66cd9bb7d4d6ab28f09
 from abc import abstractmethod
 import os
-
 import argparse
-import pymupdf
 
+import pymupdf
+from tqdm import tqdm
 
 class TextTranslator:
     def __init__(self, lang_from:str, lang_to:str):
@@ -100,12 +100,12 @@ def translate_pdf(input_file: str, source_lang: str, target_lang: str, layer: st
         ocg_orig = doc.add_ocg("Original", on=False)
 
     # Iterate over all pages
-    for page in doc:
+    for page in tqdm(doc, desc='Translating page...'):
         # Extract text grouped like lines in a paragraph.
         blocks = page.get_text("blocks", flags=textflags)
 
         # Every block of text is contained in a rectangle ("bbox")
-        for block in blocks:
+        for block in tqdm(blocks, desc='Translating block...', leave=False):
             bbox = block[:4]  # area containing the text
             text = block[4]  # the text of this block
 
