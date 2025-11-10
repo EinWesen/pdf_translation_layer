@@ -1,17 +1,48 @@
 # This file is licenced under the Apache Licence 2.0
 # and was originally taken from https://github.com/davideuler/pdf-translator-for-human/commit/9d793d084e52df5f5ba4f66cd9bb7d4d6ab28f09
+from abc import abstractmethod
+import os
 
 import argparse
 import pymupdf
-from deep_translator import (
-    GoogleTranslator,
-    ChatGptTranslator,
-)
+
+
+class TextTranslator:
+    def __init__(self, lang_from:str, lang_to:str):
+        self.lang_from=lang_from
+        self.lang_to=lang_to
+
+    @abstractmethod
+    def translate_text(self, text:str)->str:
+        return text
+
+class OpenAiCompatibleTranslator(TextTranslator):
+    def __init__(self, lang_from:str, lang_to:str):
+        super().__init__(lang_from=lang_from, lang_to=lang_to)
+        self.api_key:str|None = os.getenv("OPENAI_API_KEY", 'None')
+        self.model:str|None = os.getenv("OPEN_API_MODEL", None)
+        self.base_url:str|None = os.getenv("OPEN_API_BASE", None)
+
+        assert self.api_key is not None,  'OPENAI_API_KEY is not set'
+        assert self.model is not None,    'OPEN_API_MODEL is not set'
+        assert self.base_url is not None, 'OPEN_API_BASE is not set'
+        
+        #import now, that it is actually needed        
+
+    def translate_text(self, text:str)->str:
+        import openai
+        client = openai.OpenAI(api_key=self.api_key, base_url=self.base_url)
+
+        prompt = f'Translate the text below into {self.lang_to} and return the translated text only.\nText: "{text}"'
+
+        response = client.chat.completions.create(model=self.model, messages=[{ "role": "user", "content": prompt }])
+        
+        return response.choices[0].message.content
+
 
 # Map of supported translators
 TRANSLATORS = {
-    'google': GoogleTranslator,
-    'chatgpt': ChatGptTranslator,
+    'openai': OpenAiCompatibleTranslator,
 }
 
 def translate_pdf(input_file: str, source_lang: str, target_lang: str, layer: str = "Text", 
@@ -53,7 +84,7 @@ def translate_pdf(input_file: str, source_lang: str, target_lang: str, layer: st
     TranslatorClass = TRANSLATORS[translator_name]
     
     # Configure the translator
-    translator = TranslatorClass(source=source_lang, target=target_lang)
+    translator = TranslatorClass(lang_from=source_lang, lang_to=target_lang)
 
     # Generate output filename
     output_file = input_file.rsplit('.', 1)[0] + f'-{target_lang}.pdf'
@@ -79,7 +110,7 @@ def translate_pdf(input_file: str, source_lang: str, target_lang: str, layer: st
             text = block[4]  # the text of this block
 
             # Invoke the actual translation
-            translated = translator.translate(text)
+            translated = translator.translate_text(text)
 
             if not keep_original:
                 # Move original text to hidden layer
