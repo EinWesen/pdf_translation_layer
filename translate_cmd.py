@@ -2,6 +2,7 @@
 # and was originally taken from https://github.com/davideuler/pdf-translator-for-human/commit/9d793d084e52df5f5ba4f66cd9bb7d4d6ab28f09
 from abc import abstractmethod
 from collections import Counter
+import typing
 import os
 import argparse
 import re
@@ -10,6 +11,8 @@ import tempfile
 
 import pymupdf
 from tqdm import tqdm
+
+FALLBACK_FONT_NAME = 'helv'
 
 class TextTranslator:
     def __init__(self, lang_from:str, lang_to:str):
@@ -64,7 +67,7 @@ TRANSLATORS = {
     'openai': OpenAiCompatibleTranslator,
 }
 
-def extract_embedded_fonts(doc):
+def get_usable_fonts(doc, default_font_path:str = None)->typing.Tuple[typing.Dict[str,str], str]:
     """
     Extract all embedded fonts from a PyMuPDF document and save to temporary files.
 
@@ -111,8 +114,15 @@ def extract_embedded_fonts(doc):
 
             fonts_dict[font_name] = tmp_path
             print(f"INFO: Embedded font '{font_name}' found")
+    
+    default_font_name = FALLBACK_FONT_NAME
+    if default_font_path is not None:
+        default_font_name = os.path.basename(default_font_path)
+        if default_font_name not in fonts_dict or fonts_dict.get(default_font_name) is None:            
+            fonts_dict[default_font_name] = default_font_path
+            print(f"INFO: Added default font '{font_name}' found")
         
-    return fonts_dict
+    return (fonts_dict, default_font_name)
 
 def extract_blocks(page, text_flags):
     #blocks = page.get_text("blocks", flags=textflags)
@@ -194,7 +204,7 @@ def insert_text_block(page, fontsize=11, **kwargs):
         if fontsize <= 0: print("Could not render text")
 
 
-def translate_pdf(input_file: str, source_lang: str, target_lang: str, target_layer: str = "Text", translator_name: str = "openai", text_color: str = "blue", keep_original: bool = True):
+def translate_pdf(input_file: str, source_lang: str, target_lang: str, target_layer: str = "Text", translator_name: str = "openai", text_color: str = "blue", keep_original: bool = True, default_font_path:str = None):
     """
     Translate a PDF file from source language to target language
     
@@ -239,7 +249,7 @@ def translate_pdf(input_file: str, source_lang: str, target_lang: str, target_la
 
     # Open the document
     doc = pymupdf.open(input_file)
-    embedded_fonts = extract_embedded_fonts(doc)
+    usable_fonts,default_font_name = get_usable_fonts(doc, default_font_path)
 
     # Define an Optional Content layer for translation
     ocg_trans = doc.add_ocg(target_layer, on=True)
@@ -279,15 +289,16 @@ def translate_pdf(input_file: str, source_lang: str, target_lang: str, target_la
                         # Cover the original text only in translation layer
                         page.draw_rect(bbox, color=None, fill=WHITE, oc=ocg_trans)
 
-                    # Write the translated text in specified color
                     font_name = block['common_font']
-                    font_file_path=embedded_fonts.get(font_name,None)
-                
-                    if font_name not in embedded_fonts or font_file_path is None:
-                        #if font_name not in embedded_fonts:
-                        #    print(f"WARNING: {font_name} not found")
-                        font_name = 'helv'
                     
+                    if font_name not in usable_fonts and font_name != default_font_name: 
+                        font_name = default_font_name
+                    
+                    font_file_path = usable_fonts.get(font_name,None)
+                    if font_file_path is None:
+                        font_name = FALLBACK_FONT_NAME
+                    
+                    # Write the translated text in specified color
                     insert_text_block(
                         page,
                         rect=bbox,
@@ -348,12 +359,14 @@ def main():
                        help='Color of translated text (default: darkred)')
     parser.add_argument('--no-original', action='store_true',
                        help='Do not keep original text in base layer (default: False)')
+    parser.add_argument('--default-font-path', default=None,
+                       help=f'Font to use if no embedded font can be found (default: Internal font {FALLBACK_FONT_NAME})')
 
     args = parser.parse_args()
 
     try:
         translate_pdf(args.input_file, args.source, args.target, args.layer, 
-                     args.translator, args.color, not args.no_original)
+                     args.translator, args.color, not args.no_original, args.default_font_path)
     except Exception as e:
         print(f"Error: {str(e)}")
         exit(1)
