@@ -112,9 +112,19 @@ class OpenAiCompatibleTranslator(TextTranslator):
     def _get_token_count(self, text:str)->int:
         return len(self.token_encoder.encode(text))
 
+class CacheOnlyTranslator(TextTranslator):
+    def __init__(self, lang_from:str, lang_to:str, translator_cache_file:str=None):        
+        super().__init__(lang_from=lang_from, lang_to=lang_to, translator_cache_file=translator_cache_file)
+        if translator_cache_file is None:
+            raise ValueError('You need to provide a translator_cache_file to be able to use this translator')
+    
+    def _execute_prompt(self, text:str)->str|None:
+        return None
+
 # Map of supported translators
 TRANSLATORS = {
     'openai': OpenAiCompatibleTranslator,
+    'cacheonly': CacheOnlyTranslator,
 }
 
 def get_usable_fonts(doc, default_font_path:str = None)->typing.Tuple[typing.Dict[str,str], str]:
