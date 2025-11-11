@@ -256,82 +256,88 @@ def translate_pdf(input_file: str, source_lang: str, target_lang: str, target_la
     
     TranslatorClass = TRANSLATORS[translator_name]
     
-    # Configure the translator
-    translator = TranslatorClass(lang_from=source_lang, lang_to=target_lang,translator_cache_file=translator_cache_file)
+    translator = None
+    try:
+        # Configure the translator
+        translator = TranslatorClass(lang_from=source_lang, lang_to=target_lang,translator_cache_file=translator_cache_file)
 
-    # Generate output filename
-    output_file = input_file.rsplit('.', 1)[0] + f'-{target_lang}.pdf'
+        # Generate output filename
+        output_file = input_file.rsplit('.', 1)[0] + f'-{target_lang}.pdf'
 
-    # Open the document
-    doc = pymupdf.open(input_file)
-    usable_fonts,default_font_name = get_usable_fonts(doc, default_font_path)
+        # Open the document
+        doc = pymupdf.open(input_file)
+        usable_fonts,default_font_name = get_usable_fonts(doc, default_font_path)
 
-    # Define an Optional Content layer for translation
-    ocg_trans = doc.add_ocg(target_layer, on=True)
-    
-    # If not keeping original, create a layer for original text and hide it
-    if not keep_original:
-        ocg_orig = doc.add_ocg("Original", on=False)
-
-    # Iterate over all pages
-    for page_index, page in enumerate(tqdm(doc, desc='Translating page...')):        
-        # Extract text grouped like lines in a paragraph.
-        blocks = extract_blocks(page,textflags)
-
-        # Every block of text is contained in a rectangle ("bbox")
-        for block in tqdm(blocks, desc='Translating blocks...', leave=False):
-            bbox = block['bbox']  # area containing the text
-            text, is_valid_text = sanitize_text(block['text'])  # the text of this block
-               
-            if is_valid_text:
-
-                # Invoke the actual translation
-                translated = prepare_pdf_text(text, translator.translate_text(text))
-                
-                if is_valid_translation(text, translated):
-
-                    if not keep_original:
-                        # Move original text to hidden layer
-                        page.insert_htmlbox(
-                            bbox,
-                            text,
-                            css="* {font-family: sans-serif;}",
-                            oc=ocg_orig
-                        )
-                        # Clear original text area in base layer
-                        page.draw_rect(bbox, color=None, fill=WHITE)
-                    else:
-                        # Cover the original text only in translation layer
-                        page.draw_rect(bbox, color=None, fill=WHITE, oc=ocg_trans)
-
-                    font_name = block['common_font']
-                    
-                    if font_name not in usable_fonts and font_name != default_font_name: 
-                        font_name = default_font_name
-                    
-                    font_file_path = usable_fonts.get(font_name,None)
-                    if font_file_path is None:
-                        font_name = FALLBACK_FONT_NAME
-                    
-                    # Write the translated text in specified color
-                    insert_text_block(
-                        page,
-                        rect=bbox,
-                        buffer=translated,
-                        fontsize=block['avg_font_size'], 
-                        fontname=font_name,
-                        fontfile=font_file_path,
-                        oc=ocg_trans,
-                        color=rgb_color,
-                        rotate=block['rotation']
-                    )
+        # Define an Optional Content layer for translation
+        ocg_trans = doc.add_ocg(target_layer, on=True)
         
-        translator.sync_cache()
+        # If not keeping original, create a layer for original text and hide it
+        if not keep_original:
+            ocg_orig = doc.add_ocg("Original", on=False)
 
-    #doc.subset_fonts()
-    translator.close_cache()
-    doc.ez_save(output_file)
-    print(f"Translated PDF saved as: {output_file}")
+        # Iterate over all pages
+        for page_index, page in enumerate(tqdm(doc, desc='Translating page...')):        
+            # Extract text grouped like lines in a paragraph.
+            blocks = extract_blocks(page,textflags)
+
+            # Every block of text is contained in a rectangle ("bbox")
+            for block in tqdm(blocks, desc='Translating blocks...', leave=False):
+                bbox = block['bbox']  # area containing the text
+                text, is_valid_text = sanitize_text(block['text'])  # the text of this block
+                
+                if is_valid_text:
+
+                    # Invoke the actual translation
+                    translated = prepare_pdf_text(text, translator.translate_text(text))
+                    
+                    if is_valid_translation(text, translated):
+
+                        if not keep_original:
+                            # Move original text to hidden layer
+                            page.insert_htmlbox(
+                                bbox,
+                                text,
+                                css="* {font-family: sans-serif;}",
+                                oc=ocg_orig
+                            )
+                            # Clear original text area in base layer
+                            page.draw_rect(bbox, color=None, fill=WHITE)
+                        else:
+                            # Cover the original text only in translation layer
+                            page.draw_rect(bbox, color=None, fill=WHITE, oc=ocg_trans)
+
+                        font_name = block['common_font']
+                        
+                        if font_name not in usable_fonts and font_name != default_font_name: 
+                            font_name = default_font_name
+                        
+                        font_file_path = usable_fonts.get(font_name,None)
+                        if font_file_path is None:
+                            font_name = FALLBACK_FONT_NAME
+                        
+                        # Write the translated text in specified color
+                        insert_text_block(
+                            page,
+                            rect=bbox,
+                            buffer=translated,
+                            fontsize=block['avg_font_size'], 
+                            fontname=font_name,
+                            fontfile=font_file_path,
+                            oc=ocg_trans,
+                            color=rgb_color,
+                            rotate=block['rotation']
+                        )
+            
+            translator.sync_cache()
+
+        #doc.subset_fonts()
+        doc.ez_save(output_file)
+        print(f"Translated PDF saved as: {output_file}")
+
+    except:
+        if translator is not None:
+            translator.close_cache()
+        raise
 
 def main():
     """
