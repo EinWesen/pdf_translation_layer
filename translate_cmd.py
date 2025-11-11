@@ -8,6 +8,7 @@ import argparse
 import re
 import math
 import tempfile
+import shelve
 
 import pymupdf
 from tqdm import tqdm
@@ -15,11 +16,24 @@ from tqdm import tqdm
 FALLBACK_FONT_NAME = 'helv'
 
 class TextTranslator:
-    def __init__(self, lang_from:str, lang_to:str):
+    def __init__(self, lang_from:str, lang_to:str, translator_cache_file:str=None):
         self.lang_from=lang_from
         self.lang_to=lang_to
+        self.translator_cache_file = translator_cache_file
         self.translation_cache=dict()
+        if translator_cache_file is not None:
+            self.translation_cache=shelve.open(translator_cache_file, writeback=True)
 
+    def sync_cache(self)->None:
+        if self.translator_cache_file is not None:
+            self.translation_cache.sync()
+    
+    def close_cache(self)->None:
+        if self.translator_cache_file is not None:
+            self.translation_cache.close()
+        else:
+            self.translation_cache=dict()
+    
     def translate_text(self, text:str)->str:
         if text in self.translation_cache:            
             return self.translation_cache[text]
@@ -33,8 +47,8 @@ class TextTranslator:
         return text
 
 class OpenAiCompatibleTranslator(TextTranslator):
-    def __init__(self, lang_from:str, lang_to:str):
-        super().__init__(lang_from=lang_from, lang_to=lang_to)
+    def __init__(self, lang_from:str, lang_to:str, translator_cache_file:str=None):
+        super().__init__(lang_from=lang_from, lang_to=lang_to, translator_cache_file=translator_cache_file)
         self.api_key:str|None = os.getenv("OPENAI_API_KEY", 'None')
         self.model:str|None = os.getenv("OPEN_API_MODEL", None)
         self.base_url:str|None = os.getenv("OPEN_API_BASE", None)
@@ -108,6 +122,7 @@ def get_usable_fonts(doc, default_font_path:str = None)->typing.Tuple[typing.Dic
                 continue
 
             ext = font_data.get("ext", "ttf")
+            # TODO: Delete at some point?
             with tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False) as tmp:
                 tmp.write(font_data["content"])
                 tmp_path = tmp.name
@@ -120,7 +135,7 @@ def get_usable_fonts(doc, default_font_path:str = None)->typing.Tuple[typing.Dic
         default_font_name = os.path.basename(default_font_path)
         if default_font_name not in fonts_dict or fonts_dict.get(default_font_name) is None:            
             fonts_dict[default_font_name] = default_font_path
-            print(f"INFO: Added default font '{font_name}' found")
+            print(f"INFO: Added default font '{default_font_name}'")
         
     return (fonts_dict, default_font_name)
 
@@ -204,7 +219,7 @@ def insert_text_block(page, fontsize=11, **kwargs):
         if fontsize <= 0: print("Could not render text")
 
 
-def translate_pdf(input_file: str, source_lang: str, target_lang: str, target_layer: str = "Text", translator_name: str = "openai", text_color: str = "blue", keep_original: bool = True, default_font_path:str = None):
+def translate_pdf(input_file: str, source_lang: str, target_lang: str, target_layer: str = "Text", translator_name: str = "openai", text_color: str = "blue", keep_original: bool = True, default_font_path:str = None, translator_cache_file:str = None):
     """
     Translate a PDF file from source language to target language
     
@@ -242,7 +257,7 @@ def translate_pdf(input_file: str, source_lang: str, target_lang: str, target_la
     TranslatorClass = TRANSLATORS[translator_name]
     
     # Configure the translator
-    translator = TranslatorClass(lang_from=source_lang, lang_to=target_lang)
+    translator = TranslatorClass(lang_from=source_lang, lang_to=target_lang,translator_cache_file=translator_cache_file)
 
     # Generate output filename
     output_file = input_file.rsplit('.', 1)[0] + f'-{target_lang}.pdf'
@@ -310,9 +325,11 @@ def translate_pdf(input_file: str, source_lang: str, target_lang: str, target_la
                         color=rgb_color,
                         rotate=block['rotation']
                     )
-
+        
+        translator.sync_cache()
 
     #doc.subset_fonts()
+    translator.close_cache()
     doc.ez_save(output_file)
     print(f"Translated PDF saved as: {output_file}")
 
@@ -361,12 +378,14 @@ def main():
                        help='Do not keep original text in base layer (default: False)')
     parser.add_argument('--default-font-path', default=None,
                        help=f'Font to use if no embedded font can be found (default: Internal font {FALLBACK_FONT_NAME})')
+    parser.add_argument('--translator-cache-file', default=None,
+                       help=f'Path to persistent response cache (default: None')
 
     args = parser.parse_args()
 
     try:
         translate_pdf(args.input_file, args.source, args.target, args.layer, 
-                     args.translator, args.color, not args.no_original, args.default_font_path)
+                     args.translator, args.color, not args.no_original, args.default_font_path, args.translator_cache_file)
     except Exception as e:
         print(f"Error: {str(e)}")
         exit(1)
