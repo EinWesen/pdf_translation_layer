@@ -194,7 +194,7 @@ def insert_text_block(page, fontsize=11, **kwargs):
         if fontsize <= 0: print("Could not render text")
 
 
-def translate_pdf(input_file: str, source_lang: str, target_lang: str, layer: str = "Text", translator_name: str = "google", text_color: str = "darkred", keep_original: bool = True):
+def translate_pdf(input_file: str, source_lang: str, target_lang: str, target_layer: str = "Text", translator_name: str = "openai", text_color: str = "blue", keep_original: bool = True):
     """
     Translate a PDF file from source language to target language
     
@@ -202,9 +202,9 @@ def translate_pdf(input_file: str, source_lang: str, target_lang: str, layer: st
         input_file: Path to input PDF file
         source_lang: Source language code (e.g. 'en', 'fr')
         target_lang: Target language code (e.g. 'ko', 'ja') 
-        layer: Name of the OCG layer (default: "Text")
-        translator_name: Name of the translator to use (default: "google")
-        text_color: Color of translated text (default: "darkred")
+        target_layer: Name of the OCG layer (default: "Text")
+        translator_name: Name of the translator to use (default: "openai")
+        text_color: Color of translated text (default: "blue")
         keep_original: Whether to keep original text visible (default: True)
     """
     # Define colors
@@ -220,7 +220,7 @@ def translate_pdf(input_file: str, source_lang: str, target_lang: str, layer: st
     }
     
     # Get RGB color values, default to darkred if color not found
-    rgb_color = COLOR_MAP.get(text_color.lower(), COLOR_MAP["darkred"])
+    rgb_color = COLOR_MAP.get(text_color.lower(), COLOR_MAP["blue"])
 
     # This flag ensures that text will be dehyphenated after extraction.
     textflags = pymupdf.TEXT_DEHYPHENATE
@@ -242,7 +242,7 @@ def translate_pdf(input_file: str, source_lang: str, target_lang: str, layer: st
     embedded_fonts = extract_embedded_fonts(doc)
 
     # Define an Optional Content layer for translation
-    ocg_trans = doc.add_ocg(layer, on=True)
+    ocg_trans = doc.add_ocg(target_layer, on=True)
     
     # If not keeping original, create a layer for original text and hide it
     if not keep_original:
