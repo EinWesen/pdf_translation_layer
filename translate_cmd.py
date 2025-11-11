@@ -39,8 +39,11 @@ class TextTranslator:
             return self.translation_cache[text]
         else:
             result = self._execute_prompt(self._create_prompt_text(text))
-            self.translation_cache[text] = result
-            return result
+            if result is not None:
+                self.translation_cache[text] = result
+                return result
+            else:
+                return text
     
     def get_request_token_count(self, text:str)->int:
         return len(self._create_prompt_text(text))
@@ -54,38 +57,57 @@ class TextTranslator:
         return text
     
     @abstractmethod
-    def _execute_prompt(self, text:str)->str:
+    def _execute_prompt(self, text:str)->str|None:
         return text
 
 class OpenAiCompatibleTranslator(TextTranslator):
     def __init__(self, lang_from:str, lang_to:str, translator_cache_file:str=None):
         super().__init__(lang_from=lang_from, lang_to=lang_to, translator_cache_file=translator_cache_file)
         self.api_key:str|None = os.getenv("OPENAI_API_KEY", 'None')
-        self.model:str|None = os.getenv("OPEN_API_MODEL", None)
-        self.base_url:str|None = os.getenv("OPEN_API_BASE", None)
+        self.model:str|None = os.getenv("OPENAI_API_MODEL", None)
+        self.base_url:str|None = os.getenv("OPENAI_API_BASE", None)
+        self.model_context_size:int|None = int(os.getenv("LLM_API_MAX_TOKENS", 128000))
 
         assert self.api_key is not None,  'OPENAI_API_KEY is not set'
-        assert self.model is not None,    'OPEN_API_MODEL is not set'
-        assert self.base_url is not None, 'OPEN_API_BASE is not set'
+        assert self.model is not None,    'OPENAI_API_MODEL is not set'
+        assert self.base_url is not None, 'OPENAI_API_BASE is not set'
 
         import tiktoken
         self.token_encoder = tiktoken.get_encoding("cl100k_base")        
 
     def _create_prompt(self, text:str)->str:
-        return f"You are an expert in {self.lang_from} and {self.lang_to}.\nPlease provide a high-quality translation of the following text from {self.lang_from} to {self.lang_to}. Only generate the translated text while keeping any existing line breaks.  No additional text or explanation needed.\nText: {text}"
+        return f"You are an expert in {self.lang_from} and {self.lang_to}.\nPlease provide a high-quality translation of the following text from {self.lang_from} to {self.lang_to}. Only generate the translated text while keeping any existing line breaks.  No additional text or explanation needed.Since this text came from OCR it could contain gibberish.In that case just return it unchanged.\nText: {text}"
 
-    def _execute_prompt(self, text:str)->str:
+    def _execute_prompt(self, text:str)->str|None:
         prompt = self._create_prompt(text)
 
-        #FIXME: this should be configurable since it depends on the model 
-        assert self._get_token_count(prompt) < 3900, 'Textblock is too long' 
+        request_tokens = self._get_token_count(prompt)
+        
+        # basically we are saying render as much as we think the llm can handle
+        # but setting this limit will make sure we can notice if we go over and get cut off
+        free_tokens = max(self.model_context_size - request_tokens, self.model_context_size)
+        
         import openai
 
         client = openai.OpenAI(api_key=self.api_key, base_url=self.base_url)
 
-        response = client.chat.completions.create(model=self.model, messages=[{ "role": "user", "content": prompt }])
-        
-        return response.choices[0].message.content
+        try:
+            response = client.chat.completions.create(model=self.model, messages=[{ "role": "user", "content": prompt }], max_completion_tokens=free_tokens)
+
+            if response.choices[0].finish_reason == 'stop':
+                return response.choices[0].message.content
+            else:
+                try:
+                    tqdm.write(f"ERROR: LLM did not finish ({response.choices[0].finish_reason}); Usage {response.usage.prompt_tokens} + {response.usage.completion_tokens} of {self.model_context_size} (?)")
+                except:
+                    pass
+                return None            
+        except Exception as e:
+            try:
+                tqdm.write(f"ERROR: LLM did return an exception: {e}")
+            except:
+                pass
+            return None
 
     def _get_token_count(self, text:str)->int:
         return len(self.token_encoder.encode(text))
@@ -353,7 +375,7 @@ def translate_pdf(input_file: str, source_lang: str, target_lang: str, target_la
             translator.close_cache()
         raise
 
-def analyze_pdf(input_file: str, translator_name: str = "openai"):
+def analyze_pdf(input_file: str, translator_name: str = "openai", token_target=None):
     
     print('Opening PDF ...')
     doc = pymupdf.open(input_file)
@@ -377,6 +399,7 @@ def analyze_pdf(input_file: str, translator_name: str = "openai"):
     cache_hits = 0
     total_pages = 0
     total_blocks = 0
+    total_token_target_hits = 0
 
     # Iterate over all pages
     for page_index, page in enumerate(tqdm(doc, desc='Iterating pages ...')):        
@@ -391,6 +414,10 @@ def analyze_pdf(input_file: str, translator_name: str = "openai"):
             if is_valid_text:
                 if text not in translator.translation_cache:
                     tokens = translator.get_request_token_count(text)
+                    if token_target > 0 and tokens>token_target:
+                        print(f'INFO: {tokens} > target {token_target}')
+                        total_token_target_hits += 1
+
                     max_request_token_length = max(tokens, max_request_token_length)
                     total_request_tokens += tokens
                     total_requests += 1                    
@@ -405,6 +432,7 @@ def analyze_pdf(input_file: str, translator_name: str = "openai"):
     print(f"Total text blocks:", total_blocks)
     print(f"Total requests needed:", total_requests)
     print(f"Total requests tokens:", total_request_tokens)
+    print(f"Total requests exceeding target token limit:", total_token_target_hits)
     print(f"Max request token length:", max_request_token_length)
     print(f"Cache hits:", cache_hits)
 
@@ -484,7 +512,7 @@ def main():
         elif args.sub_command == 'translate':
             translate_pdf(args.input_file, args.source, args.target, args.layer, args.translator, args.color, not args.no_original, args.default_font_path, args.translator_cache_file)
         elif args.sub_command == 'info':
-            analyze_pdf(args.input_file, args.translator)
+            analyze_pdf(args.input_file, args.translator, 650)
         else:
             pass
 
