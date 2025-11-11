@@ -1,15 +1,15 @@
 # This file is licenced under the Apache Licence 2.0
 # and was originally taken from https://github.com/davideuler/pdf-translator-for-human/commit/9d793d084e52df5f5ba4f66cd9bb7d4d6ab28f09
 from abc import abstractmethod
+from collections import Counter
 import os
 import argparse
 import re
-from collections import Counter
 import math
+import tempfile
 
 import pymupdf
 from tqdm import tqdm
-import tempfile
 
 class TextTranslator:
     def __init__(self, lang_from:str, lang_to:str):
@@ -41,9 +41,7 @@ class OpenAiCompatibleTranslator(TextTranslator):
         assert self.base_url is not None, 'OPEN_API_BASE is not set'
 
         import tiktoken
-        self.token_encoder = tiktoken.get_encoding("cl100k_base")
-        
-        #import now, that it is actually needed        
+        self.token_encoder = tiktoken.get_encoding("cl100k_base")        
 
     def _translate_text(self, text:str)->str:
         #FIXME: this should be configurable since it depends on the model 
@@ -52,18 +50,14 @@ class OpenAiCompatibleTranslator(TextTranslator):
 
         client = openai.OpenAI(api_key=self.api_key, base_url=self.base_url)
         prompt = f"You are an expert in {self.lang_from} and {self.lang_to}.\nPlease provide a high-quality translation of the following text from {self.lang_from} to {self.lang_to}. Only generate the translated text while keeping any existing line breaks.  No additional text or explanation needed.\nText: {text}"
-#        prompt = None
-#        if '\n' in text:
-#            prompt = f'Translate the text below into {self.lang_to} while keeping line breaks and return the translated text only.\nText: {text}"'
-#        else:
-            # Stop model to complaining about the text being one line
-#            prompt = f'Translate the text below into {self.lang_to} and return the translated text only.\nText: {text}"'
 
 
         response = client.chat.completions.create(model=self.model, messages=[{ "role": "user", "content": prompt }])
         
         return response.choices[0].message.content
 
+    def get_token_count(self, text:str)->int:
+        return len(self.token_encoder.encode(text))
 
 # Map of supported translators
 TRANSLATORS = {
@@ -144,6 +138,8 @@ def extract_blocks(page, text_flags):
         for line in block["lines"]:            
             if 'dir' in line: 
                 rotation = line['dir']
+                # Fix directions that are not exactly 1 or 0 
+                rotation = (round(rotation[0]),round(rotation[1])) 
                 if not rotation in rotations:
                     rotations.append(rotation)
 
@@ -175,11 +171,22 @@ def extract_blocks(page, text_flags):
 
     return blocks
 
-def is_valid_text(text:str)->bool:
-    return not text.replace('\r', '').replace('\n', '').replace(' ', '').isdigit()
+def sanitize_text(text:str):
+    result = text.replace('\r\n', '\n').replace('\r', '\n')
+    return (result, not text.replace('\n', '').replace(' ', '').isdigit())
 
-def prepare_pdf_text(text:str)->str:
-    return re.sub(r'(?<!\\r)\\n', r'\\r\\n', text)
+def prepare_pdf_text(text:str, translation:str)->str:
+    result = translation
+    if translation.endswith('\n') and not text.endswith('\n'):
+        result = result.rstrip() #could remove more than is correct
+    elif not translation.endswith('\n') and text.endswith('\n'):
+        result += '\n'
+    return result
+
+def is_valid_translation(text:str, translation:str)->bool:
+    # Sometimes, especially with gibberish, a new line get appended
+    # no need to clutter the pdf with these results
+    return text.strip().lower() != translation.strip().lower()
 
 def insert_text_block(page, fontsize=11, **kwargs):
     while page.insert_textbox(fontsize=fontsize, **kwargs) < 0 and fontsize > 0:
@@ -249,14 +256,14 @@ def translate_pdf(input_file: str, source_lang: str, target_lang: str, layer: st
         # Every block of text is contained in a rectangle ("bbox")
         for block in tqdm(blocks, desc='Translating blocks...', leave=False):
             bbox = block['bbox']  # area containing the text
-            text = block['text']  # the text of this block
-
-            if is_valid_text(text):
+            text, is_valid_text = sanitize_text(block['text'])  # the text of this block
+               
+            if is_valid_text:
 
                 # Invoke the actual translation
-                translated = prepare_pdf_text(translator.translate_text(text))
+                translated = prepare_pdf_text(text, translator.translate_text(text))
                 
-                if translated != text:
+                if is_valid_translation(text, translated):
 
                     if not keep_original:
                         # Move original text to hidden layer
