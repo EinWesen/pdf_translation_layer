@@ -38,12 +38,23 @@ class TextTranslator:
         if text in self.translation_cache:            
             return self.translation_cache[text]
         else:
-            result = self._translate_text(text)
+            result = self._execute_prompt(self._create_prompt_text(text))
             self.translation_cache[text] = result
             return result
+    
+    def get_request_token_count(self, text:str)->int:
+        return len(self._create_prompt_text(text))
 
     @abstractmethod
-    def _translate_text(self, text:str)->str:
+    def _get_token_count(self, text:str)->str:
+        return len(text)
+
+    @abstractmethod
+    def _create_prompt_text(self, text:str)->str:
+        return text
+    
+    @abstractmethod
+    def _execute_prompt(self, text:str)->str:
         return text
 
 class OpenAiCompatibleTranslator(TextTranslator):
@@ -60,20 +71,23 @@ class OpenAiCompatibleTranslator(TextTranslator):
         import tiktoken
         self.token_encoder = tiktoken.get_encoding("cl100k_base")        
 
-    def _translate_text(self, text:str)->str:
+    def _create_prompt(self, text:str)->str:
+        return f"You are an expert in {self.lang_from} and {self.lang_to}.\nPlease provide a high-quality translation of the following text from {self.lang_from} to {self.lang_to}. Only generate the translated text while keeping any existing line breaks.  No additional text or explanation needed.\nText: {text}"
+
+    def _execute_prompt(self, text:str)->str:
+        prompt = self._create_prompt(text)
+
         #FIXME: this should be configurable since it depends on the model 
-        assert len(self.token_encoder.encode(text)) < 3900, 'Textblock is too long' 
+        assert self._get_token_count(prompt) < 3900, 'Textblock is too long' 
         import openai
 
         client = openai.OpenAI(api_key=self.api_key, base_url=self.base_url)
-        prompt = f"You are an expert in {self.lang_from} and {self.lang_to}.\nPlease provide a high-quality translation of the following text from {self.lang_from} to {self.lang_to}. Only generate the translated text while keeping any existing line breaks.  No additional text or explanation needed.\nText: {text}"
-
 
         response = client.chat.completions.create(model=self.model, messages=[{ "role": "user", "content": prompt }])
         
         return response.choices[0].message.content
 
-    def get_token_count(self, text:str)->int:
+    def _get_token_count(self, text:str)->int:
         return len(self.token_encoder.encode(text))
 
 # Map of supported translators
@@ -339,6 +353,61 @@ def translate_pdf(input_file: str, source_lang: str, target_lang: str, target_la
             translator.close_cache()
         raise
 
+def analyze_pdf(input_file: str, translator_name: str = "openai"):
+    
+    print('Opening PDF ...')
+    doc = pymupdf.open(input_file)
+    
+    print('Checking fonts ...')
+    
+    fonts, _ = get_usable_fonts(doc, None)
+    for f in fonts.values():
+        if f is not None: break
+    else:
+        print('Providing a default font is ecouraged')
+    print('-------------------------------------')
+    
+    print('Analyzing tokens ...')
+    TranslatorClass = TRANSLATORS[translator_name]
+    translator = TranslatorClass(lang_from=None, lang_to=None,translator_cache_file=None)
+
+    total_request_tokens = 0
+    max_request_token_length = 0
+    total_requests = 0
+    cache_hits = 0
+    total_pages = 0
+    total_blocks = 0
+
+    # Iterate over all pages
+    for page_index, page in enumerate(tqdm(doc, desc='Iterating pages ...')):        
+        # Extract text grouped like lines in a paragraph.
+        blocks = extract_blocks(page, pymupdf.TEXT_DEHYPHENATE)
+
+        # Every block of text is contained in a rectangle ("bbox")
+        for block in tqdm(blocks, desc='Iterating blocks...', leave=False):
+            bbox = block['bbox']  # area containing the text
+            text, is_valid_text = sanitize_text(block['text'])  # the text of this block
+                
+            if is_valid_text:
+                if text not in translator.translation_cache:
+                    tokens = translator.get_request_token_count(text)
+                    max_request_token_length = max(tokens, max_request_token_length)
+                    total_request_tokens += tokens
+                    total_requests += 1                    
+                    translator.translation_cache[text] = str(tokens) # it is only important, thet the key exists
+                else:
+                    cache_hits += 1
+
+            total_blocks += 1
+        total_pages += 1
+    
+    print(f"Total pages:", total_pages)
+    print(f"Total text blocks:", total_blocks)
+    print(f"Total requests needed:", total_requests)
+    print(f"Total requests tokens:", total_request_tokens)
+    print(f"Max request token length:", max_request_token_length)
+    print(f"Cache hits:", cache_hits)
+
 def main():
     """
     can be invoked like this:
@@ -365,8 +434,16 @@ def main():
     The translated content is an optional content layer in the new PDF file. 
     The optional layer can be hidden in Acrobat PDF Reader and Foxit Reader.
     """
+    main_parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter, add_help=False)
+    main_parser.add_argument("-h", "--help", help="show help message and exit", action="store_true")
+
+    subparsers = main_parser.add_subparsers(title='subcommands', description='(use -h for more info about each command)', help=' ... One of ...', dest="sub_command")
+    parser = subparsers.add_parser("translate", help="Translate a PDF document.", add_help=True)
+
+    parser.add_argument('--translator', '-tr', default='openai',
+                       choices=list(TRANSLATORS.keys()),
+                       help='Translator to use')
     
-    parser = argparse.ArgumentParser(description='Translate PDF documents.')
     parser.add_argument('input_file', help='Input PDF file path')
     parser.add_argument('--source', '-s', default='en',
                        help='Source language code (default: en)')
@@ -374,9 +451,6 @@ def main():
                        help='Target language code (default: zh-CN)')
     parser.add_argument('--layer', '-l', default='Text',
                        help='Name of the OCG layer (default: Text)')
-    parser.add_argument('--translator', '-tr', default='google',
-                       choices=list(TRANSLATORS.keys()),
-                       help='Translator to use (default: google)')
     parser.add_argument('--color', '-c', default='darkred',
                        choices=['darkred', 'black', 'blue', 'darkgreen', 'purple'],
                        help='Color of translated text (default: darkred)')
@@ -387,11 +461,33 @@ def main():
     parser.add_argument('--translator-cache-file', default=None,
                        help=f'Path to persistent response cache (default: None')
 
-    args = parser.parse_args()
+    parser2 = subparsers.add_parser("info", help="Show analytic information about the PDF", add_help=True)
+    parser2.add_argument('--translator', '-tr', default='openai',
+                       choices=list(TRANSLATORS.keys()),
+                       help='Translator to use')    
+    parser2.add_argument('input_file', help='Input PDF file path')
+
+    args = main_parser.parse_args()
 
     try:
-        translate_pdf(args.input_file, args.source, args.target, args.layer, 
-                     args.translator, args.color, not args.no_original, args.default_font_path, args.translator_cache_file)
+        if args.sub_command is None:
+            if args.help:
+                main_parser.print_usage()
+                print('-------------------------------------------------')
+                parser.print_help()
+                print('-------------------------------------------------')
+                parser2.print_help()
+            else:
+                parser.print_usage()
+                parser2.print_usage()
+
+        elif args.sub_command == 'translate':
+            translate_pdf(args.input_file, args.source, args.target, args.layer, args.translator, args.color, not args.no_original, args.default_font_path, args.translator_cache_file)
+        elif args.sub_command == 'info':
+            analyze_pdf(args.input_file, args.translator)
+        else:
+            pass
+
     except Exception as e:
         print(f"Error: {str(e)}")
         exit(1)
