@@ -14,6 +14,8 @@ import pymupdf
 from tqdm import tqdm
 
 FALLBACK_FONT_NAME = 'helv'
+# Pattern: match at least one Unicode letter
+LETTER_RE = re.compile(r'[^\W\d_]', re.UNICODE)
 
 class TextTranslator:
     def __init__(self, lang_from:str, lang_to:str, translator_cache_file:str=None):
@@ -38,13 +40,22 @@ class TextTranslator:
         if text in self.translation_cache:            
             return self.translation_cache[text]
         else:
-            result = self._execute_prompt(self._create_prompt_text(text))
-            if result is not None:
-                self.translation_cache[text] = result
-                return result
-            else:
-                return text
-    
+            prompt = self._create_prompt_text(text)
+            
+            tries_left = 2
+            while tries_left > 0:
+                result = self._execute_prompt(prompt)
+                if result is not None:
+                    if LETTER_RE.search(result):
+                        self.translation_cache[text] = result                
+                        return result
+                    else:
+                        # only try again if text did include letters, but right now that is checked before
+                        tries_left -= 1
+                else:
+                    tries_left = 0                    
+            return text
+                
     def get_request_token_count(self, text:str)->int:
         return len(self._create_prompt_text(text))
 
@@ -94,7 +105,7 @@ class OpenAiCompatibleTranslator(TextTranslator):
         try:
             response = client.chat.completions.create(model=self.model, messages=[{ "role": "user", "content": prompt }], max_completion_tokens=free_tokens)
 
-            if response.choices[0].finish_reason == 'stop':
+            if response.choices[0].finish_reason == 'stop':                
                 return response.choices[0].message.content
             else:
                 try:
@@ -243,8 +254,9 @@ def extract_blocks(page, text_flags):
     return blocks
 
 def sanitize_text(text:str):
-    result = text.replace('\r\n', '\n').replace('\r', '\n')
-    return (result, not text.replace('\n', '').replace(' ', '').isdigit())
+    text_ok = len(text)>1
+    text_ok = text_ok and LETTER_RE.search(text)
+    return (text.replace('\r\n', '\n').replace('\r', '\n'), text_ok)
 
 def prepare_pdf_text(text:str, translation:str)->str:
     result = translation
@@ -257,7 +269,7 @@ def prepare_pdf_text(text:str, translation:str)->str:
 def is_valid_translation(text:str, translation:str)->bool:
     # Sometimes, especially with gibberish, a new line get appended
     # no need to clutter the pdf with these results
-    return text.strip().lower() != translation.strip().lower()
+    return text.replace(' ', '').strip().lower() != translation.replace(' ', '').strip().lower() and LETTER_RE.search(translation)
 
 def insert_text_block(page, fontsize=11, **kwargs):
     while page.insert_textbox(fontsize=fontsize, **kwargs) < 0 and fontsize > 0:
