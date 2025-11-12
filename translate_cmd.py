@@ -93,7 +93,7 @@ class OpenAiCompatibleTranslator(TextTranslator):
         self.token_encoder = tiktoken.get_encoding("cl100k_base")        
 
     def _create_prompt_text(self, text:str)->typing.Tuple[str|None,str]:
-        return (f"You are an expert in {self.lang_from} and {self.lang_to}.\nPlease provide a high-quality translation of the user input from {self.lang_from} to {self.lang_to}. Only generate the translated text while keeping any existing line breaks.  No additional text or explanation needed.Since this text came from OCR it could contain gibberish.In that case just return it unchanged.", text)
+        return (f"You are an expert in {self.lang_from} and {self.lang_to}.\nPlease provide a high-quality translation of the user input from {self.lang_from} to {self.lang_to}. Only generate the translated text. No additional text or explanation needed. Since this text came from OCR it could contain gibberish. In that case just return it unchanged. It can also be formatted poorly. Remove unnecessary linebreaks in between sentences but keep paragraphs and headings.", text)
 
     def _execute_prompt(self, system_prompt_txt:str|None, user_prompt_txt:str)->str|None:
         
@@ -241,7 +241,7 @@ def extract_blocks(page, text_flags):
                 block_text += span["text"]
                 font_sizes.append(span["size"])
                 fonts.append(span["font"])
-            #block_text += '\r\n'
+            block_text += '\n'
 
         if not block_text.strip():
             continue  # skip empty text blocks
@@ -271,12 +271,9 @@ def sanitize_text(text:str):
     return (text.replace('\r\n', '\n').replace('\r', '\n'), text_ok)
 
 def prepare_pdf_text(text:str, translation:str)->str:
-    result = translation
-    if translation.endswith('\n') and not text.endswith('\n'):
-        result = result.rstrip() #could remove more than is correct
-    elif not translation.endswith('\n') and text.endswith('\n'):
-        result += '\n'
-    return result
+    expected_breaks_at_end = len(text) - len(text.rstrip('\n'))
+    result = translation.rstrip('\n')
+    return result if expected_breaks_at_end == 0 else result + ('\n' * expected_breaks_at_end)
 
 def is_valid_translation(text:str, translation:str)->bool:
     # Sometimes, especially with gibberish, a new line get appended
