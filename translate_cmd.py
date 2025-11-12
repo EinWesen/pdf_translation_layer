@@ -40,11 +40,11 @@ class TextTranslator:
         if text in self.translation_cache:            
             return self.translation_cache[text]
         else:
-            prompt = self._create_prompt_text(text)
+            system_prompt, user_prompt = self._create_prompt_text(text)
             
             tries_left = 2
             while tries_left > 0:
-                result = self._execute_prompt(prompt)
+                result = self._execute_prompt(system_prompt, user_prompt)
                 if result is not None:
                     if LETTER_RE.search(result):
                         self.translation_cache[text] = result                
@@ -57,19 +57,25 @@ class TextTranslator:
             return text
                 
     def get_request_token_count(self, text:str)->int:
-        return len(self._create_prompt_text(text))
+        system_prompt, user_prompt = self._create_prompt_text(text)
+        request_tokens = self._get_token_count(user_prompt)        
+        
+        if system_prompt is not None:
+            request_tokens += self._get_token_count(system_prompt)
+
+        return request_tokens
 
     @abstractmethod
     def _get_token_count(self, text:str)->str:
         return len(text)
 
     @abstractmethod
-    def _create_prompt_text(self, text:str)->str:
-        return text
+    def _create_prompt_text(self, text:str)->typing.Tuple[str|None,str]:
+        return (None,text)
     
     @abstractmethod
-    def _execute_prompt(self, text:str)->str|None:
-        return text
+    def _execute_prompt(self, system_prompt:str|None, user_prompt:str)->str|None:
+        return user_prompt
 
 class OpenAiCompatibleTranslator(TextTranslator):
     def __init__(self, lang_from:str, lang_to:str, translator_cache_file:str=None):
@@ -86,14 +92,20 @@ class OpenAiCompatibleTranslator(TextTranslator):
         import tiktoken
         self.token_encoder = tiktoken.get_encoding("cl100k_base")        
 
-    def _create_prompt(self, text:str)->str:
-        return f"You are an expert in {self.lang_from} and {self.lang_to}.\nPlease provide a high-quality translation of the following text from {self.lang_from} to {self.lang_to}. Only generate the translated text while keeping any existing line breaks.  No additional text or explanation needed.Since this text came from OCR it could contain gibberish.In that case just return it unchanged.\nText: {text}"
+    def _create_prompt_text(self, text:str)->typing.Tuple[str|None,str]:
+        return (f"You are an expert in {self.lang_from} and {self.lang_to}.\nPlease provide a high-quality translation of the user input from {self.lang_from} to {self.lang_to}. Only generate the translated text while keeping any existing line breaks.  No additional text or explanation needed.Since this text came from OCR it could contain gibberish.In that case just return it unchanged.", text)
 
-    def _execute_prompt(self, text:str)->str|None:
-        prompt = self._create_prompt(text)
-
-        request_tokens = self._get_token_count(prompt)
+    def _execute_prompt(self, system_prompt_txt:str|None, user_prompt_txt:str)->str|None:
         
+        request_tokens = self._get_token_count(user_prompt_txt)
+        message_list = []
+        
+        if system_prompt_txt is not None:
+            request_tokens += self._get_token_count(system_prompt_txt)
+            message_list.append({ "role": "system", "content": system_prompt_txt })
+        
+        message_list.append({ "role": "user", "content": user_prompt_txt })
+
         # basically we are saying render as much as we think the llm can handle
         # but setting this limit will make sure we can notice if we go over and get cut off
         free_tokens = max(self.model_context_size - request_tokens, self.model_context_size)
@@ -103,7 +115,7 @@ class OpenAiCompatibleTranslator(TextTranslator):
         client = openai.OpenAI(api_key=self.api_key, base_url=self.base_url)
 
         try:
-            response = client.chat.completions.create(model=self.model, messages=[{ "role": "user", "content": prompt }], max_completion_tokens=free_tokens)
+            response = client.chat.completions.create(model=self.model, messages=message_list, max_completion_tokens=free_tokens)
 
             if response.choices[0].finish_reason == 'stop':                
                 return response.choices[0].message.content
