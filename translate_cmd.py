@@ -510,9 +510,9 @@ def main():
                        help='Target language code (default: zh-CN)')
     parser.add_argument('--layer', '-l', default='Text',
                        help='Name of the OCG layer (default: Text)')
-    parser.add_argument('--color', '-c', default='darkred',
+    parser.add_argument('--color', '-c', default='blue',
                        choices=['darkred', 'black', 'blue', 'darkgreen', 'purple'],
-                       help='Color of translated text (default: darkred)')
+                       help='Color of translated text (default: blue)')
     parser.add_argument('--no-original', action='store_true',
                        help='Do not keep original text in base layer (default: False)')
     parser.add_argument('--default-font-path', default=None,
