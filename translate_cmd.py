@@ -141,7 +141,7 @@ class CacheOnlyTranslator(TextTranslator):
         if translator_cache_file is None:
             raise ValueError('You need to provide a translator_cache_file to be able to use this translator')
     
-    def _execute_prompt(self, text:str)->str|None:
+    def _execute_prompt(self, system_prompt_txt:str|None, user_prompt_txt:str)->str|None:
         return None
 
 # Map of supported translators
@@ -209,61 +209,150 @@ def get_usable_fonts(doc, default_font_path:str = None)->typing.Tuple[typing.Dic
     return (fonts_dict, default_font_name)
 
 def extract_blocks(page, text_flags):
-    #blocks = page.get_text("blocks", flags=textflags)
-    #text_dicts = page.get_text("dict", flags=textflags)
+    
+    def build_line(mupdf_line)->typing.Dict:
+        line_font_sizes = []
+        line_rotations = []
+        line_text_parts = []
+        line_fonts = []
 
-    text_dict = page.get_text("dict", flags=text_flags)
-    blocks = []
+        if 'dir' in mupdf_line: 
+            rotation = mupdf_line['dir']
+            # Fix directions that are not exactly 1 or 0 
+            rotation = (round(rotation[0]),round(rotation[1])) 
+            if not rotation in line_rotations:
+                line_rotations.append(rotation)
 
-    for block in text_dict["blocks"]:
-        
-        #print(block)
-        #print('-------------------------')
+        for span in mupdf_line["spans"]:                
+            line_text_parts.append(span["text"])                
+            line_font_sizes.append(span["size"])
+            line_fonts.append(span["font"])
 
-        if "lines" not in block:
-            continue  # skip non-text blocks
+        line_text_parts.append('\n')
 
-        bbox = block["bbox"]
-        block_text = ""
-        font_sizes = []
-        fonts = []
-        rotations = []
+        return {
+            "bbox": mupdf_line["bbox"],
+            "text" : ''.join(line_text_parts),
+            "fonts" : line_fonts,
+            "font_sizes": line_font_sizes,
+            "font_sizes_count": len(set(line_font_sizes)),
+            "font_count": len(set(line_fonts)),
+            "rotations": line_rotations
+        }
 
-        for line in block["lines"]:            
-            if 'dir' in line: 
-                rotation = line['dir']
-                # Fix directions that are not exactly 1 or 0 
-                rotation = (round(rotation[0]),round(rotation[1])) 
-                if not rotation in rotations:
-                    rotations.append(rotation)
+    def build_block(lines):
+        """Merge a list of line dicts into a single block dict."""
+        if not lines:
+            return None
 
-            for span in line["spans"]:                
-                block_text += span["text"]
-                font_sizes.append(span["size"])
-                fonts.append(span["font"])
-            block_text += '\n'
+        block_text_parts = []
+        block_font_sizes = []
+        block_fonts = []
+        block_rotations = []
+
+        # --- Merge bounding boxes ---
+        # bbox format: [x0, y0, x1, y1]
+        x0 = min(line["bbox"][0] for line in lines)
+        y0 = min(line["bbox"][1] for line in lines)
+        x1 = max(line["bbox"][2] for line in lines)
+        y1 = max(line["bbox"][3] for line in lines)
+        merged_bbox = [x0, y0, x1, y1]
+
+        # --- Collect text and font data ---
+        for line in lines:
+            block_text_parts.append(line['text'])
+            block_font_sizes.extend(line['font_sizes'])
+            block_fonts.extend(line['fonts'])
+            for rot in line['rotations']:
+                if rot not in block_rotations:
+                    block_rotations.append(rot)
+
+        block_text = ''.join(block_text_parts)
 
         if not block_text.strip():
-            continue  # skip empty text blocks
+            return None
 
-        # average font size for this block
-        avg_font_size = sum(font_sizes) / len(font_sizes) if font_sizes else 0        
-        #avg_font_size = 11
-        # most common font in this block
-        most_common_font = Counter(fonts).most_common(1)[0][0] if fonts else None
+        avg_font_size = (
+            sum(block_font_sizes) / len(block_font_sizes)
+            if block_font_sizes else 0
+        )
+        most_common_font = (
+            Counter(block_fonts).most_common(1)[0][0]
+            if block_fonts else None
+        )
 
-        assert len(rotations) <=1, 'block with multiple rotations are not supported right now'        
+        assert len(block_rotations) <= 1, 'block with multiple rotations not supported'
 
-        blocks.append({
-            "bbox": bbox,
+        return {
+            "bbox": merged_bbox,
             "text": block_text,
             "avg_font_size": avg_font_size,
             "common_font": most_common_font,
-            "rotation": (math.degrees(math.atan2(-1*rotations[0][1], rotations[0][0])) if len(rotations) == 1 else None),
-            "dir": rotations[0] if len(rotations) == 1 else None
-        })
+            "rotation": (
+                math.degrees(math.atan2(-1 * block_rotations[0][1], block_rotations[0][0]))
+                if len(block_rotations) == 1 else None
+            ),
+            "dir": block_rotations[0] if len(block_rotations) == 1 else None
+        }
 
-    return blocks
+
+    extracted_blocks = []
+    
+    text_dict = page.get_text("dict", flags=text_flags)
+    
+    for block in text_dict["blocks"]:
+        if "lines" not in block:
+            continue  # skip non-text blocks
+        
+        previous_line = None
+        current_block_lines = []    
+        lines = [build_line(line) for line in block["lines"]]
+
+        # unfortunately headings can be part of the same block
+        # so, what we try to do is creating "blocks" based on differnt font(sizes) per line
+        # At least when they are unique to the line
+        for line in lines:
+            # tqdm.write('--------------------------------------------------------------')
+            # tqdm.write(str(line))
+            # tqdm.write('--------------------------------------------------------------')
+
+            if previous_line is not None:
+                # both lines must each have exactly one font, font_size, and rotation
+                prev_clean = (
+                    previous_line["font_count"] == 1 and
+                    previous_line["font_sizes_count"] == 1 and
+                    len(previous_line["rotations"]) == 1
+                )
+                curr_clean = (
+                    line["font_count"] == 1 and
+                    line["font_sizes_count"] == 1 and
+                    len(line["rotations"]) == 1
+                )
+
+                if prev_clean and curr_clean:
+                    prev_font = previous_line["fonts"][0]
+                    prev_size = previous_line["font_sizes"][0]
+                    prev_rot = previous_line["rotations"][0]
+                    curr_font = line["fonts"][0]
+                    curr_size = line["font_sizes"][0]
+                    curr_rot = line["rotations"][0]
+
+                    # if any of these differ → start new block
+                    if (prev_font != curr_font or
+                        prev_size != curr_size or
+                        prev_rot != curr_rot):
+                        # finalize current block
+                        extracted_blocks.append(build_block(current_block_lines))
+                        current_block_lines = []  # start a new block
+
+            current_block_lines.append(line)
+            previous_line = line
+
+        # finalize last block inside this mupdf block
+        if len(current_block_lines)>0:
+            extracted_blocks.append(build_block(current_block_lines))
+
+    return extracted_blocks
 
 def sanitize_text(text:str):
     text_ok = len(text)>1
