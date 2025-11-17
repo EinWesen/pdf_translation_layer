@@ -375,7 +375,7 @@ def insert_text_block(page, fontsize=11, **kwargs):
         if fontsize <= 0: print("Could not render text")
 
 
-def translate_pdf(input_file: str, source_lang: str, target_lang: str, target_layer: str = "Text", translator_name: str = "openai", text_color: str = "blue", keep_original: bool = True, default_font_path:str = None, translator_cache_file:str = None):
+def translate_pdf(input_file: str, source_lang: str, target_lang: str, target_layer: str = "Text", translator_name: str = "openai", text_color: str = "blue", keep_original: bool = True, default_font_path:str = None, translator_cache_file:str = None, first_page:int = None, last_page:int = None):
     """
     Translate a PDF file from source language to target language
     
@@ -431,8 +431,18 @@ def translate_pdf(input_file: str, source_lang: str, target_lang: str, target_la
         if not keep_original:
             ocg_orig = doc.add_ocg("Original", on=False)
 
+        if first_page is None:
+            first_page = 0
+
+        if last_page is None:
+            last_page = doc.page_count
+
         # Iterate over all pages
         for page_index, page in enumerate(tqdm(doc, desc='Translating page...')):        
+            
+            if page_index < first_page: continue
+            if page_index > last_page: continue
+            
             # Extract text grouped like lines in a paragraph.
             blocks = extract_blocks(page,textflags)
 
@@ -608,6 +618,9 @@ def main():
                        help=f'Font to use if no embedded font can be found (default: Internal font {FALLBACK_FONT_NAME})')
     parser.add_argument('--translator-cache-file', default=None,
                        help=f'Path to persistent response cache (default: None')
+    
+    parser.add_argument('--first-page', default=None, type=int, help=f'Index of first page to translate (zerobased)')
+    parser.add_argument('--last-page', default=None, type=int, help=f'Index of last page to translate (zerobased)')
 
     parser2 = subparsers.add_parser("info", help="Show analytic information about the PDF", add_help=True)
     parser2.add_argument('--translator', '-tr', default='openai',
@@ -630,7 +643,7 @@ def main():
                 parser2.print_usage()
 
         elif args.sub_command == 'translate':
-            translate_pdf(args.input_file, args.source, args.target, args.layer, args.translator, args.color, not args.no_original, args.default_font_path, args.translator_cache_file)
+            translate_pdf(args.input_file, args.source, args.target, args.layer, args.translator, args.color, not args.no_original, args.default_font_path, args.translator_cache_file, args.first_page, args.last_page)
         elif args.sub_command == 'info':
             analyze_pdf(args.input_file, args.translator, 650)
         else:
