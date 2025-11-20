@@ -240,7 +240,7 @@ def extract_blocks(page, text_flags):
             "rotations": line_rotations
         }
 
-    def build_block(lines):
+    def append_new_block(lines, append_to:list=None):
         """Merge a list of line dicts into a single block dict."""
         if not lines:
             return None
@@ -283,7 +283,7 @@ def extract_blocks(page, text_flags):
 
         assert len(block_rotations) <= 1, 'block with multiple rotations not supported'
 
-        return {
+        created_block = {
             "bbox": merged_bbox,
             "text": block_text,
             "avg_font_size": avg_font_size,
@@ -295,6 +295,8 @@ def extract_blocks(page, text_flags):
             "dir": block_rotations[0] if len(block_rotations) == 1 else None
         }
 
+        if append_to is not None:
+            append_to.append(created_block)
 
     extracted_blocks = []
     
@@ -342,7 +344,7 @@ def extract_blocks(page, text_flags):
                         prev_size != curr_size or
                         prev_rot != curr_rot):
                         # finalize current block
-                        extracted_blocks.append(build_block(current_block_lines))
+                        append_new_block(current_block_lines, extracted_blocks)
                         current_block_lines = []  # start a new block
 
             current_block_lines.append(line)
@@ -350,8 +352,7 @@ def extract_blocks(page, text_flags):
 
         # finalize last block inside this mupdf block
         if len(current_block_lines)>0:
-            extracted_blocks.append(build_block(current_block_lines))
-
+            append_new_block(current_block_lines, extracted_blocks)            
     return extracted_blocks
 
 def sanitize_text(text:str):
