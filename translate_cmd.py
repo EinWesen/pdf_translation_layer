@@ -17,6 +17,11 @@ FALLBACK_FONT_NAME = 'helv'
 # Pattern: match at least one Unicode letter
 LETTER_RE = re.compile(r'[^\W\d_]', re.UNICODE)
 
+LAYER_MODE_REPLACE:int = 0
+LAYER_MODE_KEEP_ORIGINAL:int = 1
+LAYER_MODE_ANNOTATE:int = 2
+LAYER_MODE_ANNOTATION_ICON:int = 3
+
 class TextTranslator:
     def __init__(self, lang_from:str, lang_to:str, translator_cache_file:str=None):
         self.lang_from=lang_from
@@ -376,7 +381,7 @@ def insert_text_block(page, fontsize=11, **kwargs):
         if fontsize <= 0: print("Could not render text")
 
 
-def translate_pdf(input_file: str, source_lang: str, target_lang: str, target_layer: str = "Text", translator_name: str = "openai", text_color: str = "blue", keep_original: bool = True, default_font_path:str = None, translator_cache_file:str = None, first_page:int = None, last_page:int = None):
+def translate_pdf(input_file: str, source_lang: str, target_lang: str, target_layer: str = "Text", translator_name: str = "openai", text_color: str = "blue", layer_mode: int = LAYER_MODE_KEEP_ORIGINAL, default_font_path:str = None, translator_cache_file:str = None, first_page:int = None, last_page:int = None):
     """
     Translate a PDF file from source language to target language
     
@@ -429,7 +434,7 @@ def translate_pdf(input_file: str, source_lang: str, target_lang: str, target_la
         ocg_trans = doc.add_ocg(target_layer, on=True)
         
         # If not keeping original, create a layer for original text and hide it
-        if not keep_original:
+        if layer_mode == LAYER_MODE_REPLACE:
             ocg_orig = doc.add_ocg("Original", on=False)
 
         if first_page is None:
@@ -459,20 +464,6 @@ def translate_pdf(input_file: str, source_lang: str, target_lang: str, target_la
                     
                     if is_valid_translation(text, translated):
 
-                        if not keep_original:
-                            # Move original text to hidden layer
-                            page.insert_htmlbox(
-                                bbox,
-                                text,
-                                css="* {font-family: sans-serif;}",
-                                oc=ocg_orig
-                            )
-                            # Clear original text area in base layer
-                            page.draw_rect(bbox, color=None, fill=WHITE)
-                        else:
-                            # Cover the original text only in translation layer
-                            page.draw_rect(bbox, color=None, fill=WHITE, oc=ocg_trans)
-
                         font_name = block['common_font']
                         
                         if font_name not in usable_fonts and font_name != default_font_name: 
@@ -481,19 +472,64 @@ def translate_pdf(input_file: str, source_lang: str, target_lang: str, target_la
                         font_file_path = usable_fonts.get(font_name,None)
                         if font_file_path is None:
                             font_name = FALLBACK_FONT_NAME
+
+                        if layer_mode == LAYER_MODE_ANNOTATE:
+                            try:
+                                page.add_freetext_annot(
+                                    rect=bbox,
+                                    text=translated,
+                                    fontsize=block['avg_font_size'],
+                                    fontname=FALLBACK_FONT_NAME, # ttf not suppoted
+                                    text_color=rgb_color, 
+                                    fill_color=WHITE,          
+                                    rotate=int(block['rotation']),
+                                    opacity=0.9
+                                )  
+                            except:
+                                print(dict(rect=bbox,
+                                    text=translated,
+                                    fontsize=block['avg_font_size'],
+                                    fontname=FALLBACK_FONT_NAME, # ttf not suppoted
+                                    text_color=rgb_color, 
+                                    fill_color=WHITE,          
+                                    rotate=int(block['rotation']),
+                                    opacity=0.9))
+                                raise
+                        elif layer_mode == LAYER_MODE_ANNOTATION_ICON:
+                            page.add_text_annot(bbox[0:2], translated, icon='Note')
+                        else:
+                            if layer_mode == LAYER_MODE_REPLACE:
+                                # Move original text to hidden layer
+                                insert_text_block(
+                                    page,
+                                    rect=bbox,
+                                    buffer=translated,
+                                    fontsize=block['avg_font_size'], 
+                                    fontname=font_name,
+                                    fontfile=font_file_path,
+                                    oc=ocg_orig,
+                                    rotate=block['rotation']
+                                )
+
+                                # Clear original text area in base layer
+                                page.draw_rect(bbox, color=None, fill=WHITE)
+                            
+                            else:
+                                # Cover the original text only in translation layer
+                                page.draw_rect(bbox, color=None, fill=WHITE, oc=ocg_trans)
                         
-                        # Write the translated text in specified color
-                        insert_text_block(
-                            page,
-                            rect=bbox,
-                            buffer=translated,
-                            fontsize=block['avg_font_size'], 
-                            fontname=font_name,
-                            fontfile=font_file_path,
-                            oc=ocg_trans,
-                            color=rgb_color,
-                            rotate=block['rotation']
-                        )
+                            # Write the translated text in specified color
+                            insert_text_block(
+                                page,
+                                rect=bbox,
+                                buffer=translated,
+                                fontsize=block['avg_font_size'], 
+                                fontname=font_name,
+                                fontfile=font_file_path,
+                                oc=ocg_trans,
+                                color=rgb_color,
+                                rotate=block['rotation']
+                            )
             
             translator.sync_cache()
 
@@ -594,6 +630,8 @@ def main():
     The optional layer can be hidden in Acrobat PDF Reader and Foxit Reader.
     """
     main_parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter, add_help=False)
+    main_parser.set_defaults(layer_mode=LAYER_MODE_KEEP_ORIGINAL)
+
     main_parser.add_argument("-h", "--help", help="show help message and exit", action="store_true")
 
     subparsers = main_parser.add_subparsers(title='subcommands', description='(use -h for more info about each command)', help=' ... One of ...', dest="sub_command")
@@ -613,8 +651,12 @@ def main():
     parser.add_argument('--color', '-c', default='blue',
                        choices=['darkred', 'black', 'blue', 'darkgreen', 'purple'],
                        help='Color of translated text (default: blue)')
-    parser.add_argument('--no-original', action='store_true',
-                       help='Do not keep original text in base layer (default: False)')
+    
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument('--no-original', action='store_const', dest="layer_mode", const=LAYER_MODE_REPLACE, help='Do not keep original text in base layer (default: False)')
+    group.add_argument('--annotate-text', action='store_const', dest="layer_mode", const=LAYER_MODE_ANNOTATE, help='Add translation as annotation (default: False)')
+    group.add_argument('--annotate-icon', action='store_const', dest="layer_mode", const=LAYER_MODE_ANNOTATION_ICON, help='Add translation as annotation (default: False)')
+    
     parser.add_argument('--default-font-path', default=None,
                        help=f'Font to use if no embedded font can be found (default: Internal font {FALLBACK_FONT_NAME})')
     parser.add_argument('--translator-cache-file', default=None,
@@ -644,15 +686,14 @@ def main():
                 parser2.print_usage()
 
         elif args.sub_command == 'translate':
-            translate_pdf(args.input_file, args.source, args.target, args.layer, args.translator, args.color, not args.no_original, args.default_font_path, args.translator_cache_file, args.first_page, args.last_page)
+            translate_pdf(args.input_file, args.source, args.target, args.layer, args.translator, args.color, args.layer_mode, args.default_font_path, args.translator_cache_file, args.first_page, args.last_page)
         elif args.sub_command == 'info':
             analyze_pdf(args.input_file, args.translator, 650)
         else:
             pass
 
     except Exception as e:
-        print(f"Error: {str(e)}")
-        exit(1)
+        raise
 
 if __name__ == "__main__":
     main()
