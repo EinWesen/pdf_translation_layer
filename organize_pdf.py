@@ -1,9 +1,12 @@
 import fitz  # PyMuPDF
 import tkinter as tk
 from tkinter import PhotoImage
+from tkinter import filedialog as SystemFileDialog
 import io
 import argparse
 import os
+from collections.abc import Sequence
+
 
 
 # Define a class to store information about each page
@@ -27,15 +30,32 @@ class OrganizePdfDialog:
         self._update_colors(len(self.page_items)-1)
 
     # Function to load PDF and extract page previews
-    def add_pdf(self, pdf_path:str)->None:
-        filename = os.path.basename(pdf_path)
-        doc = fitz.open(pdf_path)
+    def add_pdf(self, pdf_paths:str|Sequence[str])->None:        
+        if isinstance(pdf_paths, str) or not isinstance(pdf_paths, Sequence):
+             pdf_paths = [pdf_paths]
         
-        # Extract previews for each page and create PageItem objects
-        for page_num in range(len(doc)):
-            # Create PageItem for each page, including image data
-            page_name = f"{filename} - Page {page_num + 1}"
-            self._append_page_item(PageItem(page_name, page_num, doc, True))
+        last_pdf_index = len(pdf_paths)-1
+        
+        for pdf_index, pdf_path in enumerate(pdf_paths):
+            filename = os.path.basename(pdf_path)
+            doc = fitz.open(pdf_path)
+            
+            if self.main_document is None:
+                self.main_document = doc        
+
+                for page_num in range(len(doc)):
+                    # Create PageItem for each page, including image data
+                    page_name = f"{filename} - Page {page_num + 1}"
+                    self._append_page_item(PageItem(page_name, page_num, doc, True))                    
+            else:               
+                is_final = 1 if (pdf_index == last_pdf_index) else 0
+                self.main_document.insert_pdf(doc, from_page=0, to_page=-1, start_at=-1, rotate=-1, links=True, annots=True, widgets=True, join_duplicates=False, show_progress=0, final=is_final)
+                new_index_start = len(self.page_items)
+                new_index_end = new_index_start + len(doc)
+                for page_num, real_index in enumerate(range(new_index_start, new_index_end)):
+                    # Create PageItem for each page, including image data
+                    page_name = f"{filename} - Page {page_num + 1}"
+                    self._append_page_item(PageItem(page_name, real_index, self.main_document, True))                    
 
 
     # Function to update the preview image when a page is selected from the listbox
@@ -76,10 +96,19 @@ class OrganizePdfDialog:
 
     def __init__(self):
         self.page_items:list[PageItem] = []
+        self.main_document:fitz.Document|None = None
                 
         # Create the main window
         self.root_window:tk.Tk = tk.Tk()
-        self.root_window.title("PDF Page Previewer")
+        self.root_window.title("Organize PDF file")
+        menubar = tk.Menu(self.root_window)
+        self.root_window.config(menu=menubar)
+
+        file_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="File", menu=file_menu)
+
+        file_menu.add_command(label="Load", command=self._menu_load)
+        file_menu.add_command(label="Save As", command=self._menu_save_as)        
 
         # Main frame
         main_frame = tk.Frame(self.root_window)
@@ -170,6 +199,28 @@ class OrganizePdfDialog:
         del self.drag_start_index
         self.drag_preview_index = None
 
+    def _menu_load(self):
+        # Allow selecting multiple PDFs
+        filepaths = SystemFileDialog.askopenfilenames(
+            title="Open PDF files",
+            filetypes=[("PDF Files", "*.pdf")],
+        )
+        if not filepaths:
+            return
+        self.add_pdf(filepaths)
+
+    def _menu_save_as(self):
+        filepath = SystemFileDialog.asksaveasfilename(
+            defaultextension=".pdf",
+            title="Save PDF As",
+            filetypes=[("PDF Files", "*.pdf")],
+        )
+        if not filepath:
+            return
+
+        # TODO: implement exporting logic here
+        print("Saving to:", filepath)
+
     def mainloop(self)->None:
         # Start the Tkinter event loop
         self.root_window.mainloop()
@@ -184,7 +235,7 @@ def main():
     
     # Run the application with the provided PDF path
     pdf_dialog = OrganizePdfDialog()
-    pdf_dialog.add_pdf(args.pdf_path)
+    #pdf_dialog.add_pdf(args.pdf_path)
     pdf_dialog.mainloop()
 
 
