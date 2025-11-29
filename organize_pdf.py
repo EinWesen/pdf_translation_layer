@@ -37,25 +37,28 @@ class OrganizePdfDialog:
         last_pdf_index = len(pdf_paths)-1
         
         for pdf_index, pdf_path in enumerate(pdf_paths):
-            filename = os.path.basename(pdf_path)
-            doc = fitz.open(pdf_path)
             
-            if self.main_document is None:
-                self.main_document = doc        
+            with fitz.open(pdf_path) as doc:
+            
+                filename = os.path.basename(pdf_path)
 
-                for page_num in range(len(doc)):
-                    # Create PageItem for each page, including image data
-                    page_name = f"{filename} - Page {page_num + 1}"
-                    self._append_page_item(PageItem(page_name, page_num, doc, True))                    
-            else:               
-                is_final = 1 if (pdf_index == last_pdf_index) else 0
-                self.main_document.insert_pdf(doc, from_page=0, to_page=-1, start_at=-1, rotate=-1, links=True, annots=True, widgets=True, join_duplicates=False, show_progress=0, final=is_final)
-                new_index_start = len(self.page_items)
-                new_index_end = new_index_start + len(doc)
-                for page_num, real_index in enumerate(range(new_index_start, new_index_end)):
-                    # Create PageItem for each page, including image data
-                    page_name = f"{filename} - Page {page_num + 1}"
-                    self._append_page_item(PageItem(page_name, real_index, self.main_document, True))                    
+                if self.main_document is None:
+                    self.main_document = fitz.open("pdf", doc.write())
+
+                    for page_num in range(len(doc)):
+                        # Create PageItem for each page, including image data
+                        page_name = f"{filename} - Page {page_num + 1}"
+                        self._append_page_item(PageItem(page_name, page_num, self.main_document, True))
+
+                else:               
+                    is_final = 1 if (pdf_index == last_pdf_index) else 0
+                    self.main_document.insert_pdf(doc, from_page=0, to_page=-1, start_at=-1, rotate=-1, links=True, annots=True, widgets=True, join_duplicates=False, show_progress=0, final=is_final)
+                    new_index_start = len(self.page_items)
+                    new_index_end = new_index_start + len(doc)
+                    for page_num, real_index in enumerate(range(new_index_start, new_index_end)):
+                        # Create PageItem for each page, including image data
+                        page_name = f"{filename} - Page {page_num + 1}"
+                        self._append_page_item(PageItem(page_name, real_index, self.main_document, True))                    
 
 
     # Function to update the preview image when a page is selected from the listbox
@@ -218,24 +221,34 @@ class OrganizePdfDialog:
         if not filepath:
             return
 
-        # TODO: implement exporting logic here
-        print("Saving to:", filepath)
+        self.save_arranged_pages_as(filepath)
+    
+    def save_arranged_pages_as(self, file_path:str)->None:
+        selected_pages = []
+        for page_item in self.page_items:
+            if page_item.selected:
+                selected_pages.append(page_item.page_index)
+        
+        with fitz.open("pdf", self.main_document.write()) as working_copy:
+            working_copy.select(selected_pages)
+            working_copy.save(filename=file_path)
 
     def mainloop(self)->None:
         # Start the Tkinter event loop
         self.root_window.mainloop()
 
-
 # Main function to parse command-line argument and run the app
 def main():
     # Set up command-line argument parsing
     parser = argparse.ArgumentParser(description="Display PDF page previews using Tkinter.")
-    parser.add_argument("pdf_path", help="Path to the PDF file.")
+    parser.add_argument("pdf_path", help="Path to the PDF file.", action='store', nargs='*' )
     args = parser.parse_args()
     
     # Run the application with the provided PDF path
     pdf_dialog = OrganizePdfDialog()
-    #pdf_dialog.add_pdf(args.pdf_path)
+    if args.pdf_path is not None and len(args.pdf_path)>0:
+        pdf_dialog.add_pdf(args.pdf_path)
+
     pdf_dialog.mainloop()
 
 
