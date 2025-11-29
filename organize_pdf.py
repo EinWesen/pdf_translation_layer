@@ -117,6 +117,58 @@ class OrganizePdfDialog:
 
         # Bind the Listbox selection to update the preview
         self.page_listbox.bind("<<ListboxSelect>>", self._show_preview)
+        self.page_listbox.bind("<Button-1>", self._start_listbox_item_drag)
+        self.page_listbox.bind("<B1-Motion>", self._during_listbox_item_drag)
+        self.page_listbox.bind("<ButtonRelease-1>", self._stop_listbox_item_drag)        
+
+    def _start_listbox_item_drag(self, event):
+        self.drag_start_index = self.page_listbox.nearest(event.y)
+        self.drag_preview_index = None
+
+    def _during_listbox_item_drag(self, event):
+        if not hasattr(self, "drag_start_index"):
+            return
+        
+        target_index = self.page_listbox.nearest(event.y)
+
+        if target_index != self.drag_preview_index:
+            # Clear previous highlight
+            if self.drag_preview_index is not None:
+                self.page_listbox.itemconfigure(self.drag_preview_index, background='white')
+
+            # Apply new highlight
+            self.page_listbox.itemconfigure(target_index, background='blue')
+
+            self.drag_preview_index = target_index
+
+    def _stop_listbox_item_drag(self, event):
+        if not hasattr(self, "drag_start_index"):
+            return
+        
+        if self.drag_preview_index is not None:
+            # Remove highlight
+            self.page_listbox.itemconfigure(self.drag_preview_index, background="white")
+
+            # Final move
+            from_index = self.drag_start_index
+            to_index = self.drag_preview_index
+
+            if to_index != from_index:
+                # --- move in Listbox ---
+                text = self.page_listbox.get(from_index)
+                self.page_listbox.delete(from_index)
+                self.page_listbox.insert(to_index, text)
+
+                # --- move in data list ---
+                self.page_items.insert(to_index, self.page_items.pop(from_index))
+
+                # Update color to match internal state
+                self._update_colors(to_index)
+                self._update_colors(from_index)
+
+        # Cleanup
+        del self.drag_start_index
+        self.drag_preview_index = None
 
     def mainloop(self)->None:
         # Start the Tkinter event loop
