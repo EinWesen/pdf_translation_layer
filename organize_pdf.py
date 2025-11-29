@@ -8,11 +8,17 @@ import os
 
 # Define a class to store information about each page
 class PageItem:
-    def __init__(self, page_name, page_index, img_data, selected=False):
+    def __init__(self, page_name:str, page_index:int, doc_ref:fitz.Document, selected:bool=False):
+        self.page_scale_matrix = fitz.Matrix(0.4, 0.4)
         self.page_name = page_name  # e.g., "Page 1"
         self.page_index = page_index  # Actual page index in the PDF
-        self.img_data = img_data  # Image data (PNG byte stream) for the page preview
+        self.doc_ref = doc_ref  # Image data (PNG byte stream) for the page preview
         self.selected = selected  # Whether the page is selected (internal state)
+    
+    def get_page_as_png(self)->io.BytesIO:
+        page = self.doc_ref.load_page(self.page_index)
+        pix = page.get_pixmap(matrix=self.page_scale_matrix)  # Resize for thumbnail
+        return io.BytesIO(pix.tobytes("png"))
 
 
 # Function to load PDF and extract page previews
@@ -23,16 +29,9 @@ def load_pdf(pdf_path):
     
     # Extract previews for each page and create PageItem objects
     for page_num in range(len(doc)):
-        page = doc.load_page(page_num)
-        pix = page.get_pixmap(matrix=fitz.Matrix(0.4, 0.4))  # Resize for thumbnail
-        
-        # Convert Pixmap to an in-memory byte stream (PNG format)
-        img_data = io.BytesIO(pix.tobytes("png"))  # Convert to PNG in memory
-        
         # Create PageItem for each page, including image data
         page_name = f"{filename} - Page {page_num + 1}"
-        page_item = PageItem(page_name, page_num, img_data)
-        page_item.selected = True
+        page_item = PageItem(page_name, page_num, doc, True)
         page_items.append(page_item)
     
     return page_items, doc
@@ -43,7 +42,7 @@ def show_preview(event, listbox, page_items, canvas_image_label, current_page_la
     selected_page = listbox.curselection()
     if selected_page:
         selected_page = selected_page[0]        
-        img_data = page_items[selected_page].img_data
+        img_data = page_items[selected_page].get_page_as_png()
         
         # Create a Tkinter-compatible PhotoImage from the in-memory PNG
         img = PhotoImage(data=img_data.getvalue())  # Load image from byte stream
