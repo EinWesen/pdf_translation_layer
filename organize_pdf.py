@@ -21,87 +21,80 @@ class PageItem:
         return io.BytesIO(pix.tobytes("png"))
 
 class OrganizePdfDialog:
-    def __init__(self):
-        pass
+    def _append_page_item(self, page_item:PageItem):
+        self.page_items.append(page_item)
+        self.page_listbox.insert(tk.END, page_item.page_name)
+        self._update_colors(len(self.page_items)-1)
 
     # Function to load PDF and extract page previews
-    def load_pdf(self, pdf_path:str)->tuple[list[PageItem], fitz.Document]:
+    def add_pdf(self, pdf_path:str)->None:
         filename = os.path.basename(pdf_path)
         doc = fitz.open(pdf_path)
-        page_items = []
         
         # Extract previews for each page and create PageItem objects
         for page_num in range(len(doc)):
             # Create PageItem for each page, including image data
             page_name = f"{filename} - Page {page_num + 1}"
-            page_item = PageItem(page_name, page_num, doc, True)
-            page_items.append(page_item)
-        
-        return page_items, doc
+            self._append_page_item(PageItem(page_name, page_num, doc, True))
 
 
     # Function to update the preview image when a page is selected from the listbox
-    def _show_preview(self, event, listbox, page_items, canvas_image_label, current_page_label):
-        selected_page = listbox.curselection()
+    def _show_preview(self, event):
+        selected_page = self.page_listbox.curselection()
         if selected_page:
-            selected_page = selected_page[0]        
-            img_data = page_items[selected_page].get_page_as_png()
+            selected_page = selected_page[0]                  
             
             # Create a Tkinter-compatible PhotoImage from the in-memory PNG
-            img = PhotoImage(data=img_data.getvalue())  # Load image from byte stream
+            img = PhotoImage(data=self.page_items[selected_page].get_page_as_png().getvalue())  # Load image from byte stream
             
             # Update the label with the preview
-            canvas_image_label.config(image=img)
-            canvas_image_label.image = img  # Keep a reference to avoid garbage collection
+            self.canvas_image_label.config(image=img)
+            self.canvas_image_label.image = img  # Keep a reference to avoid garbage collection
             
             # Update the current page label
-            current_page_label.config(text=f"Current Page: {page_items[selected_page].page_name}")
+            self.current_page_label.config(text=f"Current Page: {self.page_items[selected_page].page_name}")
 
 
     # Function to toggle the selected state of a page and update the display
-    def _toggle_selection(self, listbox, page_items):
-        selected_page = listbox.curselection()
+    def _toggle_selection(self):
+        selected_page = self.page_listbox.curselection()
         if selected_page:
             selected_page = selected_page[0]
             # Toggle the 'selected' status of the page in the internal state
-            page_items[selected_page].selected = not page_items[selected_page].selected
+            page_item = self.page_items[selected_page]
+            page_item.selected = not page_item.selected
             
             # Update colors based on internal selection state
-            self._update_colors(listbox, page_items, selected_page)
+            self._update_colors(selected_page)
 
 
     # Function to update font color based on selection state
-    def _update_colors(self, listbox, page_items, index):
-        font_color = 'green' if page_items[index].selected else 'black'
-        listbox.itemconfigure(index, {'fg': font_color, 'selectforeground': font_color})
+    def _update_colors(self, index):
+        font_color = 'green' if self.page_items[index].selected else 'black'
+        self.page_listbox.itemconfigure(index, {'fg': font_color, 'selectforeground': font_color})
 
 
-    # Create the main Tkinter window
-    def create_gui(self, pdf_path):
-        page_items, doc = self.load_pdf(pdf_path)
-        
+    def __init__(self):
+        self.page_items:list[PageItem] = []
+                
         # Create the main window
-        root = tk.Tk()
-        root.title("PDF Page Previewer")
+        self.root_window:tk.Tk = tk.Tk()
+        self.root_window.title("PDF Page Previewer")
 
         # Main frame
-        main_frame = tk.Frame(root)
+        main_frame = tk.Frame(self.root_window)
         main_frame.pack(padx=10, pady=10, fill="both", expand=True)
 
         # Left side frame for Listbox and Scrollbar
         left_frame = tk.Frame(main_frame)
         left_frame.pack(side="left", fill="both", expand=True, padx=5, pady=5)
 
-        listbox = tk.Listbox(left_frame, height=15, width=25, selectmode=tk.SINGLE)
-        listbox.pack(side="left", fill="both", expand=True)
+        self.page_listbox = tk.Listbox(left_frame, height=15, width=25, selectmode=tk.SINGLE)
+        self.page_listbox.pack(side="left", fill="both", expand=True)
 
-        scrollbar = tk.Scrollbar(left_frame, orient="vertical", command=listbox.yview)
+        scrollbar = tk.Scrollbar(left_frame, orient="vertical", command=self.page_listbox.yview)
         scrollbar.pack(side="right", fill="y")
-        listbox.config(yscrollcommand=scrollbar.set)
-
-        for i, page_item in enumerate(page_items):
-            listbox.insert(tk.END, page_item.page_name)
-            self._update_colors(listbox, page_items, i)
+        self.page_listbox.config(yscrollcommand=scrollbar.set)
 
         # Right side frame for image preview and current page label
         right_frame = tk.Frame(main_frame)
@@ -111,22 +104,23 @@ class OrganizePdfDialog:
         canvas_frame = tk.Frame(right_frame)  # Frame for image preview to control height
         canvas_frame.pack(fill="both", expand=True)
 
-        canvas_image_label = tk.Label(canvas_frame)
-        canvas_image_label.pack(fill="both", expand=True)  # Image will take up full height of the available space
+        self.canvas_image_label = tk.Label(canvas_frame)
+        self.canvas_image_label.pack(fill="both", expand=True)  # Image will take up full height of the available space
 
         # Current page label
-        current_page_label = tk.Label(right_frame, text="Current Page: 1", font=("Arial", 10))
-        current_page_label.pack(fill="x", pady=5)  # Label takes full width but fixed height
+        self.current_page_label = tk.Label(right_frame, text="Current Page: 1", font=("Arial", 10))
+        self.current_page_label.pack(fill="x", pady=5)  # Label takes full width but fixed height
 
         # Button for toggling page selection
-        select_button = tk.Button(root, text="Toggle Selection", command=lambda: self._toggle_selection(listbox, page_items))
+        select_button = tk.Button(self.root_window, text="Toggle Selection", command=self._toggle_selection)
         select_button.pack(pady=5)
 
         # Bind the Listbox selection to update the preview
-        listbox.bind("<<ListboxSelect>>", lambda event: self._show_preview(event, listbox, page_items, canvas_image_label, current_page_label))        
+        self.page_listbox.bind("<<ListboxSelect>>", self._show_preview)
 
+    def mainloop(self)->None:
         # Start the Tkinter event loop
-        root.mainloop()
+        self.root_window.mainloop()
 
 
 # Main function to parse command-line argument and run the app
@@ -137,7 +131,9 @@ def main():
     args = parser.parse_args()
     
     # Run the application with the provided PDF path
-    OrganizePdfDialog().create_gui(args.pdf_path)
+    pdf_dialog = OrganizePdfDialog()
+    pdf_dialog.add_pdf(args.pdf_path)
+    pdf_dialog.mainloop()
 
 
 # Entry point of the script
